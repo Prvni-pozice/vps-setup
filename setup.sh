@@ -35,6 +35,8 @@ WATCH_IGNORE="${WATCH_IGNORE:-coolify-* coolify}"       # glob vzory pro auto-de
 # Kontejnery s restart policy 'no' (pokusné/testovací) se NEHLÍDAJÍ (zůstanou jak byly).
 # Cron pipeline (import-felix apod.): "název:/cesta/k/logu" — hlásí stáří logu jako info:
 PIPELINE_LOGS="${PIPELINE_LOGS:-import-felix:/data/bot/import-felix/logs/cron.log}"
+# Kritické procesy (ne-kontejner, ne-cron) — "název:pgrep-pattern", dole = ❌ alert:
+WATCH_PROC="${WATCH_PROC:-honeypot:honeypot.js}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
@@ -149,6 +151,7 @@ WATCH_CRITICAL="__WATCH_CRITICAL__"
 WATCH_OPTIONAL="__WATCH_OPTIONAL__"
 WATCH_IGNORE="__WATCH_IGNORE__"
 PIPELINE_LOGS="__PIPELINE_LOGS__"
+WATCH_PROC="__WATCH_PROC__"
 HOST="$(hostname)"
 STATE_DIR="/var/lib/vps-health"; STATE="$STATE_DIR/status"; LOG="/var/log/post-boot-check.log"
 mkdir -p "$STATE_DIR"
@@ -221,6 +224,13 @@ for spec in $PIPELINE_LOGS; do
   fi
 done
 
+# kritické procesy (honeypot apod.) — musí běžet
+for spec in $WATCH_PROC; do
+  [ -n "$spec" ] || continue
+  pname="${spec%%:*}"; ppat="${spec#*:}"
+  if pgrep -f -- "$ppat" >/dev/null 2>&1; then infos+=("$pname: proces běží"); else problems+=("kritický proces '$pname' NEběží"); fi
+done
+
 reboot_pending=""; [ -f /var/run/reboot-required ] && reboot_pending="ANO ($(cat /var/run/reboot-required.pkgs 2>/dev/null | paste -sd, -))"
 
 if   [ ${#problems[@]} -gt 0 ]; then STATUS="PROBLEM"; ICON="❌"
@@ -256,7 +266,8 @@ sed -i -e "s|__EMAIL_TO__|${EMAIL_TO}|g" \
        -e "s|__WATCH_CRITICAL__|${WATCH_CRITICAL}|g" \
        -e "s|__WATCH_OPTIONAL__|${WATCH_OPTIONAL}|g" \
        -e "s|__WATCH_IGNORE__|${WATCH_IGNORE}|g" \
-       -e "s|__PIPELINE_LOGS__|${PIPELINE_LOGS}|g" /usr/local/sbin/post-boot-check.sh
+       -e "s|__PIPELINE_LOGS__|${PIPELINE_LOGS}|g" \
+       -e "s|__WATCH_PROC__|${WATCH_PROC}|g" /usr/local/sbin/post-boot-check.sh
 chmod 755 /usr/local/sbin/post-boot-check.sh
 
 # ─────────────────────────────────────────────────────────────────────────────
