@@ -1,0 +1,9 @@
+# nikdy necommitovat citlivé
+.env
+.env.*
+*.local
+*.key
+*.pem
+msmtprc
+secrets.json
+credentials.json
