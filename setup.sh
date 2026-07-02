@@ -37,6 +37,8 @@ WATCH_IGNORE="${WATCH_IGNORE:-coolify-* coolify}"       # glob vzory pro auto-de
 PIPELINE_LOGS="${PIPELINE_LOGS:-import-felix:/data/bot/import-felix/logs/cron.log}"
 # Kritické procesy (ne-kontejner, ne-cron) — "název:pgrep-pattern", dole = ❌ alert:
 WATCH_PROC="${WATCH_PROC:-honeypot:honeypot.js}"
+# Čitelný název serveru — jde do From a předmětu mailu (IP se doplní automaticky):
+SRV_LABEL="${SRV_LABEL:-1P-16GB}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
@@ -152,6 +154,7 @@ WATCH_OPTIONAL="__WATCH_OPTIONAL__"
 WATCH_IGNORE="__WATCH_IGNORE__"
 PIPELINE_LOGS="__PIPELINE_LOGS__"
 WATCH_PROC="__WATCH_PROC__"
+SRV_LABEL="__SRV_LABEL__"
 HOST="$(hostname)"
 STATE_DIR="/var/lib/vps-health"; STATE="$STATE_DIR/status"; LOG="/var/log/post-boot-check.log"
 mkdir -p "$STATE_DIR"
@@ -163,16 +166,22 @@ for _ in $(seq 1 18); do
   sleep 10
 done
 
-problems=(); warnings=(); infos=()
+problems=(); warnings=(); infos=(); crows=()
 in_list() { case " $2 " in *" $1 "*) return 0;; esac; return 1; }
 is_ignored() { local n="$1" p; for p in $WATCH_IGNORE; do case "$n" in $p) return 0;; esac; done; return 1; }
 crunning() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]; }
 cexists() { docker inspect "$1" >/dev/null 2>&1; }
 
-# systemd
-sysstate="$(systemctl is-system-running 2>/dev/null || true)"
+# systemd — nejdřív počkej, až dokončí start (jinak by "starting" hned po bootu
+# vypadalo jako problém); poll max ~120 s, break jakmile není initializing/starting
+sysstate=""
+for _ in $(seq 1 24); do
+  sysstate="$(systemctl is-system-running 2>/dev/null || true)"
+  case "$sysstate" in initializing|starting) sleep 5;; *) break;; esac
+done
 [ "$sysstate" = "running" ] || problems+=("systemd: $sysstate")
 failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | paste -sd, -)"
+nfailed="$(systemctl --failed --no-legend --plain 2>/dev/null | awk 'END{print NR}')"
 [ -n "$failed_units" ] && problems+=("failed units: $failed_units")
 
 # cron (spouští import pipelines) — musí běžet
@@ -187,13 +196,15 @@ if systemctl is-active --quiet docker 2>/dev/null; then
   docker_line="docker: ${running}/${total} kontejnerů běží"
   # kritické — musí běžet
   for c in $WATCH_CRITICAL; do
-    cexists "$c" || { problems+=("kritický '$c' chybí"); continue; }
-    crunning "$c" || problems+=("kritický '$c' NEběží ($(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null))")
+    if ! cexists "$c"; then problems+=("kritický '$c' chybí"); crows+=("$c|❌ chybí"); continue; fi
+    if crunning "$c"; then crows+=("$c|✅ běží"); else
+      st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
+      problems+=("kritický '$c' NEběží ($st)"); crows+=("$c|❌ $st"); fi
   done
   # volitelné — jen varování
   for c in $WATCH_OPTIONAL; do
     cexists "$c" || continue
-    crunning "$c" || warnings+=("volitelný '$c' neběží")
+    if crunning "$c"; then crows+=("$c|✅ běží"); else warnings+=("volitelný '$c' neběží"); crows+=("$c|⚠ neběží"); fi
   done
   # unhealthy (healthcheck selhává)
   for c in $(docker ps --filter health=unhealthy --format '{{.Names}}' 2>/dev/null); do
@@ -238,27 +249,44 @@ elif [ ${#warnings[@]} -gt 0 ]; then STATUS="WARN";    ICON="⚠"
 else STATUS="OK"; ICON="✅"; fi
 TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
-sect() { [ "$2" -gt 0 ] || return 0; printf '%s:\n' "$1"; printf -- '- %s\n' "${@:3}"; }
-REPORT="$(cat <<EOF
-${ICON} ${HOST} — post-boot ${STATUS}
-Čas:     ${TS}
-Uptime:  $(uptime -p 2>/dev/null)
-Kernel:  $(uname -r)
-${docker_line}
-Reboot čeká: ${reboot_pending:-ne}
-$(sect "PROBLÉMY" "${#problems[@]}" ${problems[@]+"${problems[@]}"})
-$(sect "VAROVÁNÍ" "${#warnings[@]}" ${warnings[@]+"${warnings[@]}"})
-$(sect "INFO" "${#infos[@]}" ${infos[@]+"${infos[@]}"})
-EOF
-)"
+# ── sestavení přehledného reportu ───────────────────────────────────────────
+case "$STATUS" in
+  OK)      HEAD="server OK po restartu"; VERDICT="Vše naběhlo v pořádku.";;
+  WARN)    HEAD="server s výhradami";    VERDICT="Naběhlo, ale ${#warnings[@]}× varování — viz níže.";;
+  PROBLEM) HEAD="server — PROBLÉM";      VERDICT="Pozor: ${#problems[@]}× problém vyžaduje kontrolu — viz níže.";;
+esac
+sys_icon="✅"; { [ "$sysstate" = "running" ] && [ -z "$failed_units" ]; } || sys_icon="❌"
+cron_icon="✅"; { systemctl is-active --quiet cron 2>/dev/null || systemctl is-active --quiet crond 2>/dev/null; } || cron_icon="❌"
+dk_icon="✅"; systemctl is-active --quiet docker 2>/dev/null || dk_icon="❌"
+
+REPORT=""; add() { REPORT+="$1"$'\n'; }; row() { add "$(printf '  %-14s %s' "$1" "$2")"; }
+add "${ICON} ${HOST} — ${HEAD}"
+add ""
+add "${VERDICT}"
+add ""
+add "Čas:         ${TS}"
+add "Uptime:      $(uptime -p 2>/dev/null)"
+add "Kernel:      $(uname -r)"
+add "Reboot čeká: ${reboot_pending:-ne}"
+add ""
+add "STAV"
+row "Systemd" "${sys_icon} ${sysstate:-?} · ${nfailed:-0} failed"
+row "Docker"  "${dk_icon} ${running:-?}/${total:-?} kontejnerů běží"
+row "Cron"    "${cron_icon} $([ "$cron_icon" = "✅" ] && echo běží || echo NEběží)"
+if [ ${#crows[@]} -gt 0 ]; then add ""; add "KONTEJNERY"; for r in "${crows[@]}"; do row "${r%%|*}" "${r#*|}"; done; fi
+if [ ${#infos[@]} -gt 0 ]; then add ""; add "PIPELINES / PROCESY"; for x in "${infos[@]}"; do add "  - $x"; done; fi
+if [ ${#problems[@]} -gt 0 ]; then add ""; add "❗ PROBLÉMY"; for x in "${problems[@]}"; do add "  - $x"; done; fi
+if [ ${#warnings[@]} -gt 0 ]; then add ""; add "⚠ VAROVÁNÍ"; for x in "${warnings[@]}"; do add "  - $x"; done; fi
+REPORT="${REPORT%$'\n'}"
 
 printf '%s\n' "$REPORT" | tee -a "$LOG" >/dev/null
 printf 'STATUS=%s\nTS=%s\n%s\n' "$STATUS" "$TS" "$REPORT" > "$STATE"
 
 # e-mail (msmtp/sendmail) — pošli vždy po startu jako potvrzení
 if command -v sendmail >/dev/null; then
-  printf 'Subject: [%s] post-boot %s %s\nFrom: %s\nTo: %s\n\n%s\n' \
-    "$HOST" "$ICON" "$STATUS" "root@$HOST" "$EMAIL_TO" "$REPORT" | sendmail -t 2>>/var/log/msmtp.log || \
+  SRV_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+  printf 'Subject: [%s] post-boot %s %s\nFrom: "%s (%s)" <root@%s>\nTo: %s\n\n%s\n' \
+    "$SRV_LABEL" "$ICON" "$STATUS" "$SRV_LABEL" "${SRV_IP:-$HOST}" "$HOST" "$EMAIL_TO" "$REPORT" | sendmail -t 2>>/var/log/msmtp.log || \
     echo "$(date -u) mail selhal (viz msmtp.log)" >> "$LOG"
 fi
 HEALTHEOF
@@ -267,7 +295,8 @@ sed -i -e "s|__EMAIL_TO__|${EMAIL_TO}|g" \
        -e "s|__WATCH_OPTIONAL__|${WATCH_OPTIONAL}|g" \
        -e "s|__WATCH_IGNORE__|${WATCH_IGNORE}|g" \
        -e "s|__PIPELINE_LOGS__|${PIPELINE_LOGS}|g" \
-       -e "s|__WATCH_PROC__|${WATCH_PROC}|g" /usr/local/sbin/post-boot-check.sh
+       -e "s|__WATCH_PROC__|${WATCH_PROC}|g" \
+       -e "s|__SRV_LABEL__|${SRV_LABEL}|g" /usr/local/sbin/post-boot-check.sh
 chmod 755 /usr/local/sbin/post-boot-check.sh
 
 # ─────────────────────────────────────────────────────────────────────────────
