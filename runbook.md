@@ -22,7 +22,17 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 5. **Health-check** `/usr/local/sbin/post-boot-check.sh` — dvouúrovňový watch-list
    (kritické = ❌ alert, volitelné = ⚠ warning) + auto-detekce ostatních
    `always/unless-stopped` kontejnerů. Kontejnery s policy `no` (pokusné) se ignorují.
-   Kontroluje i `cron` (kvůli cron pipelines) a hlásí stáří jejich logů.
+   Kontroluje i `cron` (kvůli cron pipelines) a hlásí stáří jejich logů, plus
+   kritické ne-kontejnerové procesy (`WATCH_PROC`, např. honeypot).
+   **Timing:** skript nejdřív počká, až systemd dokončí start (poll
+   `is-system-running`, max ~120 s) a až se ustálí kontejnery s healthcheckem
+   (max ~180 s) — jinak by „starting" hned po bootu vypadalo jako problém.
+   **Formát reportu** (mail + MOTD): verdikt nahoře, blok faktů (čas/uptime/
+   kernel/reboot), sekce STAV (Systemd/Docker/Cron ✅/❌), KONTEJNERY po
+   řádcích, PIPELINES/PROCESY, ❗PROBLÉMY a ⚠VAROVÁNÍ jen když existují.
+   **Odesílatel mailu:** `"<SRV_LABEL> (<IP>)" <root@host>` — v klientovi se
+   ukáže čitelný název serveru + veřejná IP (z `ip route get 1.1.1.1`),
+   předmět `[<SRV_LABEL>] post-boot ✅ OK`.
 6. **systemd unit** `post-boot-check.service` — spustí health-check po **každém** startu.
 7. **MOTD** `/etc/update-motd.d/99-vps-health` — stav při SSH přihlášení.
 
@@ -44,6 +54,8 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 | `WATCH_OPTIONAL` | `pgadmin nocodb n8n` | kontejnery: dole = ⚠ warning |
 | `WATCH_IGNORE` | `coolify-* coolify` | glob vzory mimo auto-detekci |
 | `PIPELINE_LOGS` | `import-felix:/data/bot/import-felix/logs/cron.log` | cron pipeliny: `název:log` (info) |
+| `WATCH_PROC` | `honeypot:honeypot.js` | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
+| `SRV_LABEL` | `1P-16GB` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama) |
 
 > ⏰ Časy jsou v **UTC** (systémová zóna serveru). Pro CEST (léto) = UTC+2, CET (zima) = UTC+1.
 > Ověř zónu: `timedatectl`. Chceš-li fixní lokální čas, nejdřív nastav TZ serveru.
@@ -60,9 +72,9 @@ Jiný server (příklad s ollama + webem, bez coolify):
 ```bash
 sudo EMAIL_TO=admin@firma.cz \
      SMTP_HOST=smtp.firma.cz SMTP_PORT=587 SMTP_FROM=server@firma.cz SMTP_USER=server@firma.cz \
-     REBOOT_TIME=02:30 \
+     REBOOT_TIME=02:30 SRV_LABEL="Ollama-32GB" \
      WATCH_CRITICAL="ollama web-frontend" WATCH_OPTIONAL="adminer" \
-     WATCH_IGNORE="" PIPELINE_LOGS="" \
+     WATCH_IGNORE="" PIPELINE_LOGS="" WATCH_PROC="" \
      bash setup.sh
 ```
 
