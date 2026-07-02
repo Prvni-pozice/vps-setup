@@ -30,6 +30,11 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
    **Formát reportu** (mail + MOTD): verdikt nahoře, blok faktů (čas/uptime/
    kernel/reboot), sekce STAV (Systemd/Docker/Cron ✅/❌), KONTEJNERY po
    řádcích, PIPELINES/PROCESY, ❗PROBLÉMY a ⚠VAROVÁNÍ jen když existují.
+   **Mail je multipart/alternative**: text/plain = textový report (fallback),
+   text/html = karta se schváleným designem (tmavý header s názvem serveru,
+   badge OK/Varování/Problém, STAV proužek, tabulka kontejnerů, alert boxy).
+   E-mail-safe: inline styly, tabulkový layout, bez externích assetů.
+   Stejnou hlavičku má i jednorázový mail „VPS setup dokončen".
    **Odesílatel mailu:** `"<SRV_LABEL> (<IP>)" <root@host>` — v klientovi se
    ukáže čitelný název serveru + veřejná IP (z `ip route get 1.1.1.1`),
    předmět `[<SRV_LABEL>] post-boot ✅ OK`.
