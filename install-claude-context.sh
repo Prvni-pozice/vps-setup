@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # install-claude-context.sh — přenese "Claude kontext" na nový server.
-# Předpoklad: projekt v /data/bot (jinak uprav MEM_DIR i cesty).
 # NEobsahuje přihlášení/creds — na novém stroji se do Claude Code přihlas zvlášť.
+#
+# ⚠️ Přenáší jen UNIVERZÁLNÍ kontext (styl práce, coding discipline, security gate,
+#    obecné preference/paměti). Serverově specifické věci NEHARDCODOVAT — na každém
+#    serveru jsou jiné projekty v jiných složkách. Následující se vždy donastaví
+#    podle reality daného serveru (společně s uživatelem):
+#      • PROJ                      = cesta k projektu tohoto serveru
+#      • projektový allow-list     = podle nástrojů, které server reálně používá
+#      • skilly + projektové paměti = dle konkrétního projektu
 set -euo pipefail
 
-PROJ="/data/bot"
-MEM_DIR="$HOME/.claude/projects/-data-bot/memory"   # odvozeno z cesty projektu /data/bot
-mkdir -p "$PROJ/.claude/skills/astro-builder" "$MEM_DIR" "$HOME/.claude"
+PROJ="${PROJ:?nastav PROJ na cestu projektu tohoto serveru, např. PROJ=/data/xxx bash install-claude-context.sh}"
+MEM_DIR="$HOME/.claude/projects/${PROJ//\//-}/memory"   # odvozeno z PROJ (/ → -)
+mkdir -p "$PROJ/.claude" "$MEM_DIR" "$HOME/.claude"
 echo "→ zapisuji do $PROJ a $MEM_DIR"
 
 # ── 1) HLAVNÍ CLAUDE.md ───────────────────────────────────────────────────────
@@ -16,7 +23,7 @@ cat > "$PROJ/CLAUDE.md" <<'CLAUDEMD'
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # Role
-Jsi interní testovací bot pro administrativní a provozní úkoly.
+Jsi interní provozní/dev asistent pro administrativní a provozní úkoly.
 
 # Cíl
 Pomáhej mi se strukturou práce, návrhy postupů, přípravou souborů a jednoduchými automatizacemi.
@@ -115,41 +122,8 @@ Po každém větším úkolu v textovém shrnutí uveď:
 - **Kam se to nasadilo**: GitHub / FTP / nikam
 CLAUDEMD
 
-# ── 2) SKILL astro-builder ────────────────────────────────────────────────────
-cat > "$PROJ/.claude/skills/astro-builder/SKILL.md" <<'SKILLMD'
----
-name: astro-builder
-description: Staví a upravuje malé weby a blogové podstránky v Astro.
----
-
-Použij tento skill, když uživatel chce:
-- vytvořit nebo upravit malý web v Astro
-- přidat stránku, článek nebo blogovou podstránku
-- doplnit hero, CTA, FAQ, galerii, video nebo interní odkazy
-- zkontrolovat build a opravit chyby
-
-Pravidla:
-- Preferuj jednoduché a statické řešení.
-- Nepřidávej zbytečné balíčky.
-- Pro obsah preferuj Markdown nebo MDX.
-- Zachovej minimalistickou strukturu a dobrou čitelnost.
-- Před větší změnou stručně popiš plán.
-- Po změnách vždy spusť build a zkontroluj chyby.
-
-Postup:
-1. Projdi strukturu projektu.
-2. Najdi layouty, komponenty a content strukturu.
-3. Navrhni nejmenší nutnou změnu.
-4. Proveď úpravy.
-5. Spusť build.
-6. Stručně shrň změny a případné chyby.
-
-Kontrolní checklist:
-- fungují interní odkazy
-- jsou vyplněná základní metadata
-- build proběhne bez chyby
-- změny zapadají do existující šablony
-SKILLMD
+# ── 2) SKILLY — per-projekt, netransferovat (na každém serveru jiné; doplní se
+#      podle konkrétního projektu společně s uživatelem) ────────────────────────
 
 # ── 3) GLOBÁLNÍ settings ──────────────────────────────────────────────────────
 cat > "$HOME/.claude/settings.json" <<'SETJSON'
@@ -174,22 +148,12 @@ cat > "$HOME/.claude/settings.local.json" <<'SETLOCAL'
 }
 SETLOCAL
 
-# ── 4) PROJEKTOVÝ settings (očištěný od strojově specifického balastu) ─────────
+# ── 4) PROJEKTOVÝ settings — allow-list doplnit per-server podle nástrojů,
+#      které server reálně používá (zjistí se za provozu / se uživatelem) ───────
 cat > "$PROJ/.claude/settings.local.json" <<'PROJSET'
 {
   "permissions": {
-    "allow": [
-      "Bash(npm run:*)",
-      "Bash(npm --version)",
-      "Bash(apt-get list:*)",
-      "Bash(dpkg -l)",
-      "Bash(sudo apt-get:*)",
-      "Bash(docker run:*)",
-      "Bash(docker exec:*)",
-      "WebFetch(domain:astro.build)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:api.github.com)"
-    ]
+    "allow": []
   }
 }
 PROJSET
@@ -278,14 +242,14 @@ cat > "$MEM_DIR/MEMORY.md" <<'MEMIDX'
 MEMIDX
 
 echo
-echo "✅ Hotovo. Přeneseno:"
-echo "   • $PROJ/CLAUDE.md"
-echo "   • $PROJ/.claude/skills/astro-builder/"
+echo "✅ Hotovo. Přenesen univerzální kontext:"
+echo "   • $PROJ/CLAUDE.md (role, coding discipline, security gate)"
 echo "   • $HOME/.claude/settings.json + settings.local.json"
-echo "   • $PROJ/.claude/settings.local.json"
+echo "   • $PROJ/.claude/settings.local.json (allow-list PRÁZDNÝ — doplnit per-server)"
 echo "   • $MEM_DIR/ (4 feedback + 1 reference + MEMORY.md)"
 echo
-echo "Ještě ručně (nejde přes soubory):"
-echo "   • MCP astro-docs:   claude mcp add astro-docs npx -- -y @anthropic/astro-docs   (ověř přesný příkaz)"
-echo "   • Plugin market:    v Claude Code:  /plugin marketplace add anthropics/claude-plugins-official"
+echo "Donastavit per-server (podle reality tohoto serveru, společně s uživatelem):"
+echo "   • projektový allow-list v $PROJ/.claude/settings.local.json"
+echo "   • skilly + projektové paměti dle konkrétního projektu"
+echo "   • MCP servery / pluginy, pokud je projekt používá"
 echo "   • Přihlášení do Claude Code proveď znovu (creds se nepřenášejí)."
