@@ -71,8 +71,14 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 | `WATCH_IGNORE` | `coolify-* coolify` | glob vzory mimo auto-detekci |
 | `PIPELINE_LOGS` | `import-felix:/data/bot/import-felix/logs/cron.log` | cron pipeliny: `název:log` (info) |
 | `WATCH_PROC` | `honeypot:honeypot.js` | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
-| `SRV_LABEL` | `1P-16GB` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama) |
+| `SRV_LABEL` | `$(hostname -s)` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama). **Unikátní per server** → default je hostname, ne natvrdo konkrétní server. Tento server (`1p`) má `1P-16GB` v `/etc/vps-setup.env`. |
 | `HEALTH_DAILY_TIME` | `04:00` | UTC — kdy chodí denní health-check (heartbeat po upgrade+reboot okně) |
+
+> 💾 **Per-server konfigurace** se na konci běhu uloží do **`/etc/vps-setup.env`**
+> (bez hesla — to zůstává jen v `/etc/msmtprc`). Skript ho na začátku sám načte,
+> takže příští `sudo bash setup.sh` hodnoty nemusíš znovu předávat. Přednost:
+> cmdline env > `/etc/vps-setup.env` > default. Chceš jiný název serveru? Uprav
+> `SRV_LABEL` v tom souboru (mimo git).
 
 > ⏰ Časy jsou v **UTC** (systémová zóna serveru). Pro CEST (léto) = UTC+2, CET (zima) = UTC+1.
 > Ověř zónu: `timedatectl`. Chceš-li fixní lokální čas, nejdřív nastav TZ serveru.
@@ -119,7 +125,7 @@ sudo rm -f /etc/apt/apt.conf.d/52unattended-local.conf \
            /etc/systemd/system/post-boot-check.service \
            /etc/systemd/system/vps-health-daily.service \
            /etc/systemd/system/vps-health-daily.timer \
-           /etc/update-motd.d/99-vps-health /etc/msmtprc
+           /etc/update-motd.d/99-vps-health /etc/msmtprc /etc/vps-setup.env
 sudo systemctl daemon-reload
 # volitelně: sudo apt-get purge fail2ban msmtp msmtp-mta unattended-upgrades
 ```

@@ -15,8 +15,13 @@
 #
 set -euo pipefail
 
+# Per-server konfigurace mimo repo (bez hesla). Přednost: cmdline env > tento
+# soubor > default níže. Soubor zapíše setup.sh na konci běhu (viz krok 7),
+# takže příští běhy hodnoty načtou samy — nemusíš je znovu předávat.
+[ -r /etc/vps-setup.env ] && . /etc/vps-setup.env
+
 # ─────────────────────────────────────────────────────────────────────────────
-# KONFIGURACE (per-server) — přepiš přes env nebo zde
+# KONFIGURACE (per-server) — přepiš přes env, /etc/vps-setup.env, nebo zde
 # ─────────────────────────────────────────────────────────────────────────────
 EMAIL_TO="${EMAIL_TO:-zdenek@prvni-pozice.com}"     # kam chodí reporty
 SMTP_HOST="${SMTP_HOST:-1pmail.cz}"
@@ -40,8 +45,10 @@ WATCH_IGNORE="${WATCH_IGNORE:-coolify-* coolify}"       # glob vzory pro auto-de
 PIPELINE_LOGS="${PIPELINE_LOGS:-import-felix:/data/bot/import-felix/logs/cron.log}"
 # Kritické procesy (ne-kontejner, ne-cron) — "název:pgrep-pattern", dole = ❌ alert:
 WATCH_PROC="${WATCH_PROC:-honeypot:honeypot.js}"
-# Čitelný název serveru — jde do From a předmětu mailu (IP se doplní automaticky):
-SRV_LABEL="${SRV_LABEL:-1P-16GB}"
+# Čitelný název serveru — jde do From a předmětu mailu (IP se doplní automaticky).
+# UNIKÁTNÍ per server → default = hostname (NE natvrdo konkrétní server!).
+# Tenhle server (1p) má SRV_LABEL=1P-16GB v /etc/vps-setup.env.
+SRV_LABEL="${SRV_LABEL:-$(hostname -s)}"
 # Denní health-check (heartbeat) — pošle stav i bez rebootu, ať ticho = problém:
 HEALTH_DAILY_TIME="${HEALTH_DAILY_TIME:-04:00}"     # UTC — po upgrade+reboot okně
 
@@ -590,6 +597,37 @@ fi
 echo
 EOF
 chmod 755 /etc/update-motd.d/99-vps-health
+
+# ── per-server konfigurace → /etc/vps-setup.env (BEZ hesla) ──────────────────
+# Zapíše aktuální hodnoty, ať je příští běh načte sám (viz zdroj na začátku
+# skriptu). Forma ": ${VAR:=…}" = přednost má cmdline env, pak tento soubor.
+# SMTP_PASS se ZÁMĚRNĚ neukládá (zůstává jen v /etc/msmtprc, 600).
+umask 077
+cat > /etc/vps-setup.env <<EOF
+# Per-server konfigurace vps-setup — generuje setup.sh. NEcommitovat do gitu.
+# Heslo zde NENÍ (jen v /etc/msmtprc). Uprav dle potřeby; příští běh to načte.
+: "\${SRV_LABEL:=${SRV_LABEL}}"
+: "\${EMAIL_TO:=${EMAIL_TO}}"
+: "\${SMTP_HOST:=${SMTP_HOST}}"
+: "\${SMTP_PORT:=${SMTP_PORT}}"
+: "\${SMTP_FROM:=${SMTP_FROM}}"
+: "\${SMTP_USER:=${SMTP_USER}}"
+: "\${REBOOT_TIME:=${REBOOT_TIME}}"
+: "\${UPGRADE_TIME:=${UPGRADE_TIME}}"
+: "\${HEALTH_DAILY_TIME:=${HEALTH_DAILY_TIME}}"
+: "\${F2B_MAXRETRY:=${F2B_MAXRETRY}}"
+: "\${F2B_BANTIME:=${F2B_BANTIME}}"
+: "\${F2B_FINDTIME:=${F2B_FINDTIME}}"
+: "\${F2B_IGNOREIP:=${F2B_IGNOREIP}}"
+: "\${WATCH_CRITICAL:=${WATCH_CRITICAL}}"
+: "\${WATCH_OPTIONAL:=${WATCH_OPTIONAL}}"
+: "\${WATCH_IGNORE:=${WATCH_IGNORE}}"
+: "\${PIPELINE_LOGS:=${PIPELINE_LOGS}}"
+: "\${WATCH_PROC:=${WATCH_PROC}}"
+EOF
+chmod 600 /etc/vps-setup.env
+umask 022
+log "per-server konfigurace uložena → /etc/vps-setup.env (SRV_LABEL=${SRV_LABEL})"
 
 # ─────────────────────────────────────────────────────────────────────────────
 log "7/7 — test e-mailu + verifikace…"
