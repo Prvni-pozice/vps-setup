@@ -2,9 +2,15 @@
 
 Nastaví na Ubuntu serveru (22.04/24.04) jednotný provozní baseline:
 automatické aktualizace s nočním restartem, fail2ban, e-mailové notifikace
-přes SMTP a post-boot health-check služeb/kontejnerů s reportem.
+přes SMTP a health-check služeb/kontejnerů s reportem.
 
 Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden soubor.
+
+**Dva HTML maily se stejnou šablonou, From i předmětem `[SRV_LABEL]`:**
+- **health-check** — po startu (`post-boot`) **i denně** (`health`, heartbeat).
+  Chodí **vždy**, takže ticho = problém (server neběží / nemá mail).
+- **apt-upgrade** — po každém automatickém upgradu. Nahrazuje ošklivý vestavěný
+  plaintext (`Unattended-Upgrade::Mail` je vypnutý). Mailuje jen při změně/chybě.
 
 ---
 
@@ -34,11 +40,16 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
    text/html = karta se schváleným designem (tmavý header s názvem serveru,
    badge OK/Varování/Problém, STAV proužek, tabulka kontejnerů, alert boxy).
    E-mail-safe: inline styly, tabulkový layout, bez externích assetů.
-   Stejnou hlavičku má i jednorázový mail „VPS setup dokončen".
+   Stejnou hlavičku má i jednorázový mail „VPS setup dokončen" a **apt-upgrade** report.
    **Odesílatel mailu:** `"<SRV_LABEL> (<IP>)" <root@host>` — v klientovi se
    ukáže čitelný název serveru + veřejná IP (z `ip route get 1.1.1.1`),
-   předmět `[<SRV_LABEL>] post-boot ✅ OK`.
-6. **systemd unit** `post-boot-check.service` — spustí health-check po **každém** startu.
+   předmět `[<SRV_LABEL>] post-boot ✅ OK` (po startu), `[<SRV_LABEL>] health ✅ OK`
+   (denní heartbeat) nebo `[<SRV_LABEL>] apt-upgrade ✅ OK` (po upgradu).
+   Skript zná `RUN_MODE` (`boot`/`daily`) — mění jen slovník („po restartu" vs. „stav").
+6. **systemd unit** `post-boot-check.service` — health-check po **každém** startu —
+   plus **`vps-health-daily.timer`** (denně v `HEALTH_DAILY_TIME`, heartbeat i bez rebootu).
+   **apt-upgrade report** `/usr/local/sbin/apt-upgrade-report.sh` se spouští přes
+   `ExecStartPost` v drop-inu `apt-daily-upgrade.service.d/zz-vps-report.conf`.
 7. **MOTD** `/etc/update-motd.d/99-vps-health` — stav při SSH přihlášení.
 
 ---
@@ -61,6 +72,7 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 | `PIPELINE_LOGS` | `import-felix:/data/bot/import-felix/logs/cron.log` | cron pipeliny: `název:log` (info) |
 | `WATCH_PROC` | `honeypot:honeypot.js` | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
 | `SRV_LABEL` | `1P-16GB` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama) |
+| `HEALTH_DAILY_TIME` | `04:00` | UTC — kdy chodí denní health-check (heartbeat po upgrade+reboot okně) |
 
 > ⏰ Časy jsou v **UTC** (systémová zóna serveru). Pro CEST (léto) = UTC+2, CET (zima) = UTC+1.
 > Ověř zónu: `timedatectl`. Chceš-li fixní lokální čas, nejdřív nastav TZ serveru.
@@ -90,18 +102,23 @@ systemctl status fail2ban unattended-upgrades post-boot-check.service
 fail2ban-client status sshd
 sudo unattended-upgrade --dry-run -d | tail                 # co by se aktualizovalo
 sudo /usr/local/sbin/post-boot-check.sh && cat /var/lib/vps-health/status   # ruční test + e-mail
-systemctl list-timers apt-daily-upgrade.timer               # kdy poběží upgrade
+sudo RUN_MODE=daily /usr/local/sbin/post-boot-check.sh      # test denního (heartbeat) mailu
+sudo /usr/local/sbin/apt-upgrade-report.sh                  # test apt reportu (mailuje jen při změně/chybě)
+systemctl list-timers apt-daily-upgrade.timer vps-health-daily.timer   # kdy poběží upgrade + heartbeat
 ```
 
 ## Rollback
 
 ```bash
-sudo systemctl disable --now post-boot-check.service fail2ban
+sudo systemctl disable --now post-boot-check.service vps-health-daily.timer fail2ban
 sudo rm -f /etc/apt/apt.conf.d/52unattended-local.conf \
            /etc/systemd/system/apt-daily-upgrade.timer.d/override.conf \
+           /etc/systemd/system/apt-daily-upgrade.service.d/zz-vps-report.conf \
            /etc/fail2ban/jail.local \
-           /usr/local/sbin/post-boot-check.sh \
+           /usr/local/sbin/post-boot-check.sh /usr/local/sbin/apt-upgrade-report.sh \
            /etc/systemd/system/post-boot-check.service \
+           /etc/systemd/system/vps-health-daily.service \
+           /etc/systemd/system/vps-health-daily.timer \
            /etc/update-motd.d/99-vps-health /etc/msmtprc
 sudo systemctl daemon-reload
 # volitelně: sudo apt-get purge fail2ban msmtp msmtp-mta unattended-upgrades

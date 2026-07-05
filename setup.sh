@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
 # setup.sh — VPS baseline: auto-updaty (+reboot), fail2ban, SMTP notifikace,
-#            post-boot health-check + MOTD. Idempotentní (lze spustit opakovaně).
+#            post-boot health-check + denní heartbeat + MOTD. Idempotentní.
+# Dva HTML maily (stejná šablona, From i předmět [SRV_LABEL]):
+#   • health-check — po startu (post-boot) i denně (heartbeat, ticho = problém)
+#   • apt-upgrade  — po každém automatickém upgradu (nahrazuje ošklivý plaintext)
 #
 # Cíl: Ubuntu 22.04/24.04 server. Spouštět jako root:  sudo bash setup.sh
 #
@@ -39,6 +42,8 @@ PIPELINE_LOGS="${PIPELINE_LOGS:-import-felix:/data/bot/import-felix/logs/cron.lo
 WATCH_PROC="${WATCH_PROC:-honeypot:honeypot.js}"
 # Čitelný název serveru — jde do From a předmětu mailu (IP se doplní automaticky):
 SRV_LABEL="${SRV_LABEL:-1P-16GB}"
+# Denní health-check (heartbeat) — pošle stav i bez rebootu, ať ticho = problém:
+HEALTH_DAILY_TIME="${HEALTH_DAILY_TIME:-04:00}"     # UTC — po upgrade+reboot okně
 
 # ─────────────────────────────────────────────────────────────────────────────
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
@@ -97,8 +102,8 @@ cat > /etc/apt/apt.conf.d/52unattended-local.conf <<EOF
 Unattended-Upgrade::Allowed-Origins:: "\${distro_id}:\${distro_codename}-updates";
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "${REBOOT_TIME}";
-Unattended-Upgrade::Mail "${EMAIL_TO}";
-Unattended-Upgrade::MailReport "on-change";
+// Vestavěný plaintext mail je VYPNUTÝ — report posílá /usr/local/sbin/apt-upgrade-report.sh
+// v HTML se stejnou hlavičkou/From/předmětem jako health-check (viz krok 6).
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 EOF
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
@@ -249,9 +254,23 @@ elif [ ${#warnings[@]} -gt 0 ]; then STATUS="WARN";    ICON="⚠"
 else STATUS="OK"; ICON="✅"; fi
 TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
+# RUN_MODE=boot (po startu, default) | daily (denní heartbeat) — mění jen slovník
+RUN_MODE="${RUN_MODE:-boot}"
+if [ "$RUN_MODE" = daily ]; then
+  MODE_TAG="health"; FOOT_TAG="health-check"
+  OK_HEAD="server OK"; OK_TITLE="Server běží v pořádku"
+  OK_SUB="Všechny služby i kontejnery jsou v provozu."; OK_VERDICT="Vše v pořádku."
+  PROB_SUB="Na serveru nejsou některé kritické komponenty v pořádku."
+else
+  MODE_TAG="post-boot"; FOOT_TAG="post-boot-check"
+  OK_HEAD="server OK po restartu"; OK_TITLE="Server naběhl v pořádku"
+  OK_SUB="Po restartu jsou všechny služby i kontejnery v provozu."; OK_VERDICT="Vše naběhlo v pořádku."
+  PROB_SUB="Server naběhl, ale některé kritické komponenty nejsou v pořádku."
+fi
+
 # ── sestavení přehledného reportu ───────────────────────────────────────────
 case "$STATUS" in
-  OK)      HEAD="server OK po restartu"; VERDICT="Vše naběhlo v pořádku.";;
+  OK)      HEAD="$OK_HEAD";          VERDICT="$OK_VERDICT";;
   WARN)    HEAD="server s výhradami";    VERDICT="Naběhlo, ale ${#warnings[@]}× varování — viz níže.";;
   PROBLEM) HEAD="server — PROBLÉM";      VERDICT="Pozor: ${#problems[@]}× problém vyžaduje kontrolu — viz níže.";;
 esac
@@ -294,14 +313,14 @@ if command -v sendmail >/dev/null; then
 
   case "$STATUS" in
     OK)      B_BG="#e6f4ec"; B_FG="#157347"; B_DOT="#1f9d55"; B_TXT="OK"
-             H_TITLE="Server naběhl v pořádku"
-             H_SUB="Po restartu jsou všechny služby i kontejnery v provozu.";;
+             H_TITLE="$OK_TITLE"
+             H_SUB="$OK_SUB";;
     WARN)    B_BG="#fbf3dd"; B_FG="#9a6a00"; B_DOT="#d9a441"; B_TXT="Varování"
              H_TITLE="Naběhlo s výhradami — ${#warnings[@]}× varování"
              H_SUB="Server běží, ale některé komponenty hlásí varování — viz níže.";;
     PROBLEM) B_BG="#fbe7e5"; B_FG="#b3261e"; B_DOT="#d64541"; B_TXT="Problém"
              H_TITLE="Pozor — ${#problems[@]}× problém k prošetření"
-             H_SUB="Server naběhl, ale některé kritické komponenty nejsou v pořádku.";;
+             H_SUB="$PROB_SUB";;
   esac
   SYS_DOT="$(dot_color "$sys_icon")"; CRON_DOT="$(dot_color "$cron_icon")"
   DK_DOT="$(dot_color "$dk_icon")"
@@ -365,14 +384,14 @@ ${ALERTS}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13.5px;">${CONT_ROWS}</table></td></tr>
 <tr><td style="padding:14px 22px;border-top:1px solid #eef1f4;font-size:12px;color:#71808f;">
 Uptime: <b style="color:#3f4a53;font-weight:600;">$(uptime -p 2>/dev/null)</b> &nbsp;&nbsp; Kernel: <b style="color:#3f4a53;font-weight:600;">$(uname -r)</b> &nbsp;&nbsp; Reboot čeká: <b style="color:#3f4a53;font-weight:600;">${reboot_pending:-ne}</b></td></tr>
-<tr><td style="background:#f7f8fa;border-top:1px solid #e5e9ee;padding:11px 22px;font-size:11px;color:#9aa6b1;font-family:Consolas,Menlo,monospace;border-radius:0 0 12px 12px;">post-boot-check &middot; vps-setup</td></tr>
+<tr><td style="background:#f7f8fa;border-top:1px solid #e5e9ee;padding:11px 22px;font-size:11px;color:#9aa6b1;font-family:Consolas,Menlo,monospace;border-radius:0 0 12px 12px;">${FOOT_TAG} &middot; vps-setup</td></tr>
 </table></td></tr></table>
 </body></html>
 HTML
 )"
   BOUNDARY="=_vps-health-$$"
   {
-    printf 'Subject: [%s] post-boot %s %s\n' "$SRV_LABEL" "$ICON" "$STATUS"
+    printf 'Subject: [%s] %s %s %s\n' "$SRV_LABEL" "$MODE_TAG" "$ICON" "$STATUS"
     printf 'From: "%s (%s)" <root@%s>\n' "$SRV_LABEL" "${SRV_IP:-$HOST}" "$HOST"
     printf 'To: %s\n' "$EMAIL_TO"
     printf 'MIME-Version: 1.0\nContent-Type: multipart/alternative; boundary="%s"\n\n' "$BOUNDARY"
@@ -391,6 +410,122 @@ sed -i -e "s|__EMAIL_TO__|${EMAIL_TO}|g" \
        -e "s|__WATCH_PROC__|${WATCH_PROC}|g" \
        -e "s|__SRV_LABEL__|${SRV_LABEL}|g" /usr/local/sbin/post-boot-check.sh
 chmod 755 /usr/local/sbin/post-boot-check.sh
+
+# ── apt-upgrade report (HTML, stejná šablona jako health-check) ──────────────
+cat > /usr/local/sbin/apt-upgrade-report.sh <<'APTEOF'
+#!/usr/bin/env bash
+# apt-upgrade-report.sh — po běhu unattended-upgrades pošle HTML report se
+# STEJNOU hlavičkou, From i předmětem [SRV_LABEL] jako health-check.
+# Mailuje jen když se něco upgradovalo NEBO nastala chyba; klidné no-op běhy
+# mlčí (denní stav pokrývá vps-health-daily). Spravováno setup.sh.
+set -uo pipefail
+EMAIL_TO="__EMAIL_TO__"
+SRV_LABEL="__SRV_LABEL__"
+HOST="$(hostname)"
+UULOG="/var/log/unattended-upgrades/unattended-upgrades.log"
+STAMP="/var/lib/vps-health/apt-report.last"
+command -v sendmail >/dev/null 2>&1 || exit 0
+[ -f "$UULOG" ] || exit 0
+
+# poslední běh = blok od posledního "Starting unattended upgrades script" do konce
+block="$(awk '/Starting unattended upgrades script/{buf=""} {buf=buf $0 ORS} END{printf "%s", buf}' "$UULOG")"
+[ -n "$block" ] || exit 0
+
+pkgs="$(printf '%s\n' "$block" | sed -n 's/.*Packages that will be upgraded: //p' | tail -n1)"
+err="$(printf '%s\n' "$block" | grep -iE 'ERROR|Exception|Traceback|failed to install' | head -n5)"
+
+# nic k hlášení → ticho (že server žije, pokryje denní heartbeat)
+[ -z "$pkgs" ] && [ -z "$err" ] && exit 0
+
+# dedup: stejný běh neposílat 2× (ExecStartPost může proběhnout opakovaně)
+mkdir -p "$(dirname "$STAMP")"
+sig="$(printf '%s' "$block" | md5sum | awk '{print $1}')"
+[ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$sig" ] && exit 0
+printf '%s' "$sig" > "$STAMP"
+
+if [ -n "$err" ]; then STATUS="PROBLEM"; ICON="❌"; else STATUS="OK"; ICON="✅"; fi
+TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+reboot_pending="ne"; [ -f /var/run/reboot-required ] && reboot_pending="ANO ($(cat /var/run/reboot-required.pkgs 2>/dev/null | paste -sd, -))"
+npkg=0; [ -n "$pkgs" ] && npkg="$(printf '%s' "$pkgs" | wc -w)"
+
+# ── text/plain fallback ─────────────────────────────────────────────────────
+REPORT="${ICON} ${HOST} — automatické aktualizace"$'\n\n'
+if [ "$STATUS" = OK ]; then REPORT+="Nainstalováno ${npkg} aktualizací."$'\n'
+else REPORT+="Aktualizace narazily na chybu — viz níže."$'\n'; fi
+REPORT+=$'\n'"Čas:         ${TS}"$'\n'"Reboot čeká: ${reboot_pending}"$'\n'
+[ -n "$pkgs" ] && REPORT+=$'\n'"Balíky (${npkg}):"$'\n'"  ${pkgs}"$'\n'
+[ -n "$err" ] && REPORT+=$'\n'"Chyby:"$'\n'"$(printf '%s\n' "$err" | sed 's/^/  /')"$'\n'
+REPORT="${REPORT%$'\n'}"
+
+command -v sendmail >/dev/null || exit 0
+SRV_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+TS_DATE="$(date -u '+%Y-%m-%d')"; TS_TIME="$(date -u '+%H:%M UTC')"
+html_esc() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+if [ "$STATUS" = OK ]; then
+  B_BG="#e6f4ec"; B_FG="#157347"; B_DOT="#1f9d55"; B_TXT="OK"
+  H_TITLE="Aktualizace nainstalovány"
+  H_SUB="Nainstalováno ${npkg} balíčků z bezpečnostních a systémových zdrojů."
+else
+  B_BG="#fbe7e5"; B_FG="#b3261e"; B_DOT="#d64541"; B_TXT="Problém"
+  H_TITLE="Aktualizace selhaly"
+  H_SUB="Automatické aktualizace narazily na chybu — je potřeba kontrola."
+fi
+
+# obsah: seznam balíků (monospace, zalomený) + případné chyby (alert box)
+PKG_HTML=""
+if [ -n "$pkgs" ]; then
+  PKG_HTML="<tr><td style=\"padding:16px 22px 2px;\"><div style=\"font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#71808f;font-weight:700;margin:0 0 9px;\">Upgradované balíčky (${npkg})</div><div style=\"font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.8;color:#33414d;word-break:break-word;\">$(html_esc "$pkgs")</div></td></tr>"
+fi
+ERR_HTML=""
+if [ -n "$err" ]; then
+  items=""; while IFS= read -r l; do [ -n "$l" ] && items+="<div style=\"font-size:13px;line-height:1.6;color:#3f4a53;\">&bull; $(html_esc "$l")</div>"; done <<< "$err"
+  ERR_HTML="<tr><td style=\"padding:16px 22px 0;\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td style=\"background:#fbe7e5;border:1px solid #f2c9c4;border-left:4px solid #d64541;border-radius:9px;padding:12px 14px;\"><div style=\"margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:800;color:#b3261e;\">&#10071; Chyby</div>${items}</td></tr></table></td></tr>"
+fi
+
+HTML="$(cat <<HTML
+<!doctype html>
+<html><body style="margin:0;padding:0;background:#eceef1;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eceef1;"><tr><td align="center" style="padding:24px 8px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e5e9ee;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2933;">
+<tr><td style="background:#263445;padding:16px 22px;border-radius:12px 12px 0 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td style="color:#ffffff;font-weight:700;font-size:15px;">${SRV_LABEL}<br><span style="font-weight:500;color:#9fb0c2;font-size:12px;font-family:Consolas,Menlo,monospace;">${HOST} &middot; ${SRV_IP:-?}</span></td>
+<td align="right" style="color:#9fb0c2;font-size:12px;font-family:Consolas,Menlo,monospace;white-space:nowrap;">${TS_DATE}<br>${TS_TIME}</td>
+</tr></table></td></tr>
+<tr><td style="padding:20px 22px 6px;">
+<div style="font-size:22px;font-weight:800;margin:0 0 4px;">${H_TITLE}</div>
+<div style="color:#55636e;font-size:14px;line-height:1.5;">${H_SUB}</div></td></tr>
+<tr><td style="padding:12px 22px 0;"><span style="display:inline-block;padding:5px 12px;border-radius:999px;font-weight:700;font-size:12px;letter-spacing:.09em;text-transform:uppercase;background:${B_BG};color:${B_FG};"><span style="color:${B_DOT};">&#9679;</span>&nbsp;${B_TXT}</span></td></tr>
+${ERR_HTML}
+${PKG_HTML}
+<tr><td style="padding:14px 22px;border-top:1px solid #eef1f4;font-size:12px;color:#71808f;">
+Reboot čeká: <b style="color:#3f4a53;font-weight:600;">${reboot_pending}</b></td></tr>
+<tr><td style="background:#f7f8fa;border-top:1px solid #e5e9ee;padding:11px 22px;font-size:11px;color:#9aa6b1;font-family:Consolas,Menlo,monospace;border-radius:0 0 12px 12px;">apt-upgrade &middot; vps-setup</td></tr>
+</table></td></tr></table>
+</body></html>
+HTML
+)"
+BOUNDARY="=_vps-apt-$$"
+{
+  printf 'Subject: [%s] apt-upgrade %s %s\n' "$SRV_LABEL" "$ICON" "$STATUS"
+  printf 'From: "%s (%s)" <root@%s>\n' "$SRV_LABEL" "${SRV_IP:-$HOST}" "$HOST"
+  printf 'To: %s\n' "$EMAIL_TO"
+  printf 'MIME-Version: 1.0\nContent-Type: multipart/alternative; boundary="%s"\n\n' "$BOUNDARY"
+  printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n%s\n\n' "$BOUNDARY" "$REPORT"
+  printf -- '--%s\nContent-Type: text/html; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n%s\n\n' "$BOUNDARY" "$HTML"
+  printf -- '--%s--\n' "$BOUNDARY"
+} | sendmail -t 2>>/var/log/msmtp.log
+APTEOF
+sed -i -e "s|__EMAIL_TO__|${EMAIL_TO}|g" \
+       -e "s|__SRV_LABEL__|${SRV_LABEL}|g" /usr/local/sbin/apt-upgrade-report.sh
+chmod 755 /usr/local/sbin/apt-upgrade-report.sh
+# spustit report po každém běhu apt-daily-upgrade (tj. po unattended-upgrades)
+mkdir -p /etc/systemd/system/apt-daily-upgrade.service.d
+cat > /etc/systemd/system/apt-daily-upgrade.service.d/zz-vps-report.conf <<EOF
+[Service]
+ExecStartPost=/usr/local/sbin/apt-upgrade-report.sh
+EOF
 
 # ─────────────────────────────────────────────────────────────────────────────
 log "6/7 — systemd unit (spustí health-check po každém startu)…"
@@ -411,6 +546,34 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable post-boot-check.service >/dev/null 2>&1 || true
+
+# denní health-check (heartbeat) — pošle stav i bez rebootu (ticho = problém)
+cat > /etc/systemd/system/vps-health-daily.service <<'EOF'
+[Unit]
+Description=Denní health-check + report (heartbeat)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=RUN_MODE=daily
+ExecStart=/usr/local/sbin/post-boot-check.sh
+RemainAfterExit=no
+EOF
+cat > /etc/systemd/system/vps-health-daily.timer <<EOF
+[Unit]
+Description=Spouští denní health-check (heartbeat)
+
+[Timer]
+OnCalendar=*-*-* ${HEALTH_DAILY_TIME}:00 UTC
+Persistent=true
+RandomizedDelaySec=3m
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now vps-health-daily.timer >/dev/null 2>&1 || true
 
 # MOTD — stav při přihlášení
 cat > /etc/update-motd.d/99-vps-health <<'EOF'
@@ -478,6 +641,9 @@ echo "• apt-daily-upgrade:    příští běh $(systemctl show apt-daily-upgra
 echo "• reboot po updatu:     ${REBOOT_TIME} UTC (jen když reboot-required)"
 echo "• fail2ban sshd:        $(fail2ban-client status sshd 2>/dev/null | grep -i 'currently banned' || echo 'aktivní')"
 echo "• post-boot-check:      $(systemctl is-enabled post-boot-check.service 2>/dev/null)"
+echo "• denní health-check:   $(systemctl is-enabled vps-health-daily.timer 2>/dev/null) (${HEALTH_DAILY_TIME} UTC)"
+echo "• apt-upgrade report:   HTML po každém upgradu (vestavěný plaintext mail vypnut)"
 echo
 log "Ruční test health-checku:  sudo /usr/local/sbin/post-boot-check.sh  (pošle e-mail)"
+log "Ruční test apt reportu:    sudo /usr/local/sbin/apt-upgrade-report.sh  (mailuje jen při změně/chybě)"
 log "Rollback viz runbook.md."
