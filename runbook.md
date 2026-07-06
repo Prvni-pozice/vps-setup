@@ -66,11 +66,11 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 | `UPGRADE_TIME` | 02:00 | UTC, před rebootem |
 | `F2B_MAXRETRY` / `F2B_BANTIME` | 5 / 1h | fail2ban |
 | `F2B_IGNOREIP` | 127.0.0.1/8 ::1 | whitelist (přidej pevnou IP, máš-li) |
-| `WATCH_CRITICAL` | `vndftp grafana` | kontejnery: dole = ❌ alert |
-| `WATCH_OPTIONAL` | `pgadmin nocodb n8n` | kontejnery: dole = ⚠ warning |
-| `WATCH_IGNORE` | `coolify-* coolify` | glob vzory mimo auto-detekci |
-| `PIPELINE_LOGS` | `import-felix:/data/bot/import-felix/logs/cron.log` | cron pipeliny: `název:log` (info) |
-| `WATCH_PROC` | `honeypot:honeypot.js` | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
+| `WATCH_CRITICAL` | *(prázdné)* | kontejnery: dole = ❌ alert. **Per server** → default prázdný, hodnoty v `/etc/vps-setup.env`. (1P-32GB: `is-next-php-1 is-next-database-1 is-next-nginx-1 paperclip-postgres open-webui`) |
+| `WATCH_OPTIONAL` | *(prázdné)* | kontejnery: dole = ⚠ warning |
+| `WATCH_IGNORE` | *(prázdné)* | glob vzory mimo auto-detekci (1P-32GB: `is-next-mailer-1` = mailpit, záměrně vypnutý) |
+| `PIPELINE_LOGS` | *(prázdné)* | cron pipeliny: `název:log` (info) |
+| `WATCH_PROC` | *(prázdné)* | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
 | `SRV_LABEL` | `$(hostname -s)` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama). **Unikátní per server** → default je hostname, ne natvrdo konkrétní server. Tento server (`1p`) má `1P-16GB` v `/etc/vps-setup.env`. |
 | `HEALTH_DAILY_TIME` | `04:00` | UTC — kdy chodí denní health-check (heartbeat po upgrade+reboot okně) |
 

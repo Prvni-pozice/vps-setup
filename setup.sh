@@ -36,15 +36,21 @@ F2B_BANTIME="${F2B_BANTIME:-1h}"
 F2B_FINDTIME="${F2B_FINDTIME:-10m}"
 F2B_IGNOREIP="${F2B_IGNOREIP:-127.0.0.1/8 ::1}"     # bez whitelistu ext. IP (dynamická)
 
-# Health-check — které kontejnery hlídat (per-server):
-WATCH_CRITICAL="${WATCH_CRITICAL:-vndftp grafana}"      # dole = ❌ PROBLEM (alert)
-WATCH_OPTIONAL="${WATCH_OPTIONAL:-pgadmin nocodb n8n}"  # dole = ⚠ warning (jen info)
-WATCH_IGNORE="${WATCH_IGNORE:-coolify-* coolify}"       # glob vzory pro auto-detekci k ignoru
+# Health-check — které kontejnery/procesy hlídat (UNIKÁTNÍ per server!).
+# Defaulty jsou ZÁMĚRNĚ prázdné (jako SRV_LABEL=hostname) — konkrétní služby
+# patří do /etc/vps-setup.env daného serveru, ne natvrdo do sdíleného skriptu.
+# Prázdno = nehlídat nic navíc (auto-detekce níže stejně zachytí spadlé
+# always/unless-stopped kontejnery jako varování). Pozn.: defaulty MUSÍ zůstat
+# prázdné, jinak by ": ${VAR:=}" v env souboru nešlo použít k vypnutí hlídání
+# (operátor :- bere prázdno jako „nezadáno" a vrátil by default).
+WATCH_CRITICAL="${WATCH_CRITICAL:-}"   # kontejnery: dole = ❌ PROBLEM (alert)
+WATCH_OPTIONAL="${WATCH_OPTIONAL:-}"   # kontejnery: dole = ⚠ warning (jen info)
+WATCH_IGNORE="${WATCH_IGNORE:-}"       # glob vzory pro auto-detekci k ignoru
 # Kontejnery s restart policy 'no' (pokusné/testovací) se NEHLÍDAJÍ (zůstanou jak byly).
 # Cron pipeline (import-felix apod.): "název:/cesta/k/logu" — hlásí stáří logu jako info:
-PIPELINE_LOGS="${PIPELINE_LOGS:-import-felix:/data/bot/import-felix/logs/cron.log}"
+PIPELINE_LOGS="${PIPELINE_LOGS:-}"
 # Kritické procesy (ne-kontejner, ne-cron) — "název:pgrep-pattern", dole = ❌ alert:
-WATCH_PROC="${WATCH_PROC:-honeypot:honeypot.js}"
+WATCH_PROC="${WATCH_PROC:-}"
 # Čitelný název serveru — jde do From a předmětu mailu (IP se doplní automaticky).
 # UNIKÁTNÍ per server → default = hostname (NE natvrdo konkrétní server!).
 # Tenhle server (1p) má SRV_LABEL=1P-16GB v /etc/vps-setup.env.
