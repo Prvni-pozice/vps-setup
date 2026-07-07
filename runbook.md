@@ -1,10 +1,20 @@
 # VPS baseline — runbook + zadání pro Claude
 
 Nastaví na Ubuntu serveru (22.04/24.04) jednotný provozní baseline:
-automatické aktualizace s nočním restartem, fail2ban, e-mailové notifikace
+automatické aktualizace (**bez** automatického restartu — restart dělá uživatel
+ručně, health-check ho červeně připomene), fail2ban, e-mailové notifikace
 přes SMTP a health-check služeb/kontejnerů s reportem.
 
-Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden soubor.
+Instalaci dělá **`setup.sh`** (idempotentní; při opakovaném běhu se už neptá na
+SMTP heslo). Health skripty žijí v **`scripts/`** a do `/usr/local/sbin` se
+**symlinkují** — po prvním setupu se změny nasazují BEZ re-runu setup.sh:
+
+- **změna konfigurace** (watch listy, prahy, e-mail…) → uprav `/etc/vps-setup.env`
+  — skripty ho čtou za běhu, platí od příští kontroly
+- **změna kódu** (logika checků, vzhled mailu) → uprav / `git pull` v repu
+  — symlink míří přímo na repo, platí od příští kontroly
+- `setup.sh` je potřeba jen poprvé na novém serveru (nebo při změně
+  systemd/apt/fail2ban částí)
 
 **Dva HTML maily se stejnou šablonou, From i předmětem `[SRV_LABEL]`:**
 - **health-check** — po startu (`post-boot`) **i denně** (`health`, heartbeat).
@@ -18,18 +28,26 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 
 1. **Auto-updaty** (`unattended-upgrades`) — bezpečnostní **i** `-updates`, override v
    `/etc/apt/apt.conf.d/52unattended-local.conf` (defaultní `50…` se nemění).
-2. **Noční restart** — jen když je potřeba (`reboot-required`), v `REBOOT_TIME`.
-   Timer instalace updatů se posune na `UPGRADE_TIME` (musí být **před** rebootem,
-   jinak by se restart odložil o den).
+2. **Automatický restart je VYPNUTÝ** (`Automatic-Reboot "false"`). Když update
+   vyžaduje restart (`reboot-required`), health-check i apt report to **červeně
+   zvýrazní** (box „🔴 Nutný ruční restart" + seznam balíků) — restart provede
+   uživatel ručně (`sudo reboot`). Timer instalace updatů běží v `UPGRADE_TIME`.
 3. **SMTP relay** (`msmtp` + `msmtp-mta`) → `/etc/msmtprc` (chmod 600, root-only).
 4. **fail2ban** — `sshd` jail: `maxretry` pokusů → ban `bantime`, **bez eskalace**.
    Ban akce `ufw` (když je UFW aktivní) jinak `nftables-multiport`. `backend=systemd`
    (Ubuntu 24.04 nemá `/var/log/auth.log`).
-5. **Health-check** `/usr/local/sbin/post-boot-check.sh` — dvouúrovňový watch-list
+5. **Health-check** `scripts/post-boot-check.sh` (symlink z
+   `/usr/local/sbin/post-boot-check.sh`; konfigurace za běhu z
+   `/etc/vps-setup.env`) — dvouúrovňový watch-list
    (kritické = ❌ alert, volitelné = ⚠ warning) + auto-detekce ostatních
    `always/unless-stopped` kontejnerů. Kontejnery s policy `no` (pokusné) se ignorují.
-   Kontroluje i `cron` (kvůli cron pipelines) a hlásí stáří jejich logů, plus
-   kritické ne-kontejnerové procesy (`WATCH_PROC`, např. honeypot).
+   **Počítadlo Docker (X/Y)** má ve jmenovateli jen kontejnery, které _mají_ běžet
+   (policy ≠ `no`) — jeden zapomenutý one-shot kontejner tak netrvale nebarví stav
+   oranžově. Kontroluje i `cron` (kvůli cron pipelines) a **stáří jejich logů proti
+   prahu** (`PIPELINE_LOGS` „název:log:max_min", default 120 min: čerstvý = zeleně,
+   starší nebo chybí = ⚠ oranžově), plus kritické ne-kontejnerové procesy
+   (`WATCH_PROC`, např. honeypot) a **počet běžících `tmux` session** (napříč
+   uživateli, jen když nějaká běží — informativně).
    **Timing:** skript nejdřív počká, až systemd dokončí start (poll
    `is-system-running`, max ~120 s) a až se ustálí kontejnery s healthcheckem
    (max ~180 s) — jinak by „starting" hned po bootu vypadalo jako problém.
@@ -62,23 +80,23 @@ Vše dělá **`setup.sh`** — idempotentní (lze spustit opakovaně), jeden sou
 | `SMTP_HOST` / `SMTP_PORT` | 1pmail.cz / 587 | 587=STARTTLS (1pmail.cz jede tady), 465=SSL |
 | `SMTP_FROM` / `SMTP_USER` | podpora@prvni-pozice.com | odesílatel / login |
 | `SMTP_PASS` | *(prompt)* | **nezadávat na cmdline** — skript se zeptá |
-| `REBOOT_TIME` | 02:30 | **UTC** (= 04:30 CEST) |
-| `UPGRADE_TIME` | 02:00 | UTC, před rebootem |
+| `REBOOT_TIME` | 02:30 | **nepoužívá se** (auto-reboot vypnutý; ponecháno pro zpětnou kompat.) |
+| `UPGRADE_TIME` | 02:00 | UTC — kdy běží instalace updatů |
 | `F2B_MAXRETRY` / `F2B_BANTIME` | 5 / 1h | fail2ban |
 | `F2B_IGNOREIP` | 127.0.0.1/8 ::1 | whitelist (přidej pevnou IP, máš-li) |
 | `WATCH_CRITICAL` | *(prázdné)* | kontejnery: dole = ❌ alert. **Per server** → default prázdný, hodnoty v `/etc/vps-setup.env`. (1P-32GB: `is-next-php-1 is-next-database-1 is-next-nginx-1 paperclip-postgres open-webui`) |
 | `WATCH_OPTIONAL` | *(prázdné)* | kontejnery: dole = ⚠ warning |
 | `WATCH_IGNORE` | *(prázdné)* | glob vzory mimo auto-detekci (1P-32GB: `is-next-mailer-1` = mailpit, záměrně vypnutý) |
-| `PIPELINE_LOGS` | *(prázdné)* | cron pipeliny: `název:log` (info) |
-| `WATCH_PROC` | *(prázdné)* | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert |
+| `PIPELINE_LOGS` | *(prázdné)* | cron pipeliny: `název:log` nebo `název:log:max_min` (default práh 120 min; čerstvý=✅ zeleně, starší/chybí=⚠ oranžově). (1P-16GB: `import-felix:/data/bot/import-felix/logs/cron.log`) |
+| `WATCH_PROC` | *(prázdné)* | kritické procesy: `název:pgrep-pattern` — neběží = ❌ alert. (1P-16GB: `honeypot:honeypot.js`) |
 | `SRV_LABEL` | `$(hostname -s)` | čitelný název serveru — jde do From a předmětu mailu (IP se doplní sama). **Unikátní per server** → default je hostname, ne natvrdo konkrétní server. Tento server (`1p`) má `1P-16GB` v `/etc/vps-setup.env`. |
 | `HEALTH_DAILY_TIME` | `04:00` | UTC — kdy chodí denní health-check (heartbeat po upgrade+reboot okně) |
 
 > 💾 **Per-server konfigurace** se na konci běhu uloží do **`/etc/vps-setup.env`**
-> (bez hesla — to zůstává jen v `/etc/msmtprc`). Skript ho na začátku sám načte,
-> takže příští `sudo bash setup.sh` hodnoty nemusíš znovu předávat. Přednost:
-> cmdline env > `/etc/vps-setup.env` > default. Chceš jiný název serveru? Uprav
-> `SRV_LABEL` v tom souboru (mimo git).
+> (bez hesla — to zůstává jen v `/etc/msmtprc`). Health skripty ho čtou **za
+> běhu** → úprava souboru platí od příští kontroly, bez re-runu setup.sh.
+> Přednost: cmdline env > `/etc/vps-setup.env` > default. Chceš jiný název
+> serveru nebo práh pipeline? Uprav to přímo v tom souboru (mimo git).
 
 > ⏰ Časy jsou v **UTC** (systémová zóna serveru). Pro CEST (léto) = UTC+2, CET (zima) = UTC+1.
 > Ověř zónu: `timedatectl`. Chceš-li fixní lokální čas, nejdřív nastav TZ serveru.
@@ -95,7 +113,7 @@ Jiný server (příklad s ollama + webem, bez coolify):
 ```bash
 sudo EMAIL_TO=admin@firma.cz \
      SMTP_HOST=smtp.firma.cz SMTP_PORT=587 SMTP_FROM=server@firma.cz SMTP_USER=server@firma.cz \
-     REBOOT_TIME=02:30 SRV_LABEL="Ollama-32GB" \
+     SRV_LABEL="Ollama-32GB" \
      WATCH_CRITICAL="ollama web-frontend" WATCH_OPTIONAL="adminer" \
      WATCH_IGNORE="" PIPELINE_LOGS="" WATCH_PROC="" \
      bash setup.sh
@@ -149,8 +167,9 @@ sudo systemctl daemon-reload
 > (mám ho, nebo si ho vyžádej). Postup:
 > 1. Zjisti reálný stav: `timedatectl` (zóna), `docker ps` (kontejnery + restart policy),
 >    `crontab -l` a `/etc/cron.d` (pipeliny), `ufw status`, je-li MTA.
-> 2. Se mnou potvrď per-server proměnné (hlavně `WATCH_CRITICAL/OPTIONAL`, `PIPELINE_LOGS`,
->    `REBOOT_TIME` v UTC, SMTP údaje). Kontejnery s policy `no` neřeš (pokusné).
+> 2. Se mnou potvrď per-server proměnné (hlavně `WATCH_CRITICAL/OPTIONAL`, `PIPELINE_LOGS`
+>    vč. prahu stáří, SMTP údaje). Auto-reboot je vypnutý (restart ručně). Kontejnery
+>    s policy `no` neřeš (pokusné).
 > 3. Spusť `sudo … bash setup.sh` s těmi proměnnými (heslo zadám interaktivně).
 > 4. Ověř podle sekce „Ověření" a nech mě zkontrolovat testovací e-mail.
 > Security gate: heslo nikdy do gitu ani do logu; `/etc/msmtprc` musí být 0600.
